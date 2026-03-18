@@ -1,10 +1,12 @@
 "use server";
 
 import { supabaseAdmin as supabase } from "../lib/supabase";
-import { aiClient, AI_TOOLS, MODEL_NAME } from "../lib/ai-agent";
-import * as tools from "./client-tools";
+import { aiClient, MODEL_NAME } from "../lib/ai-agent";
+import { Client } from "@modelcontextprotocol/sdk/client/index.js";
+import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js";
 import PDFParser from "pdf2json";
 
+// Identificador temporario de usuario configurado para a prova de conceito
 const TEMP_USER_ID = "00000000-0000-0000-0000-000000000000";
 
 export async function processChatMessage(content: string, role: string, attachments: any[] = []) {
@@ -12,136 +14,134 @@ export async function processChatMessage(content: string, role: string, attachme
     // Salva a mensagem enviada pelo usuario no banco de dados
     await supabase.from('message').insert([{ text: content, role: 'user', archive: attachments, user_id: TEMP_USER_ID }]);
 
-    // Busca o historico de mensagens para dar contexto a IA
+    // Busca o historico recente de mensagens para que a inteligencia artificial entenda o contexto da conversa
     const { data: history } = await supabase
       .from('message')
       .select('role, text')
       .order('created_at', { ascending: false })
       .limit(15);
 
-    // Prepara o conteudo do usuario suportando texto e imagens simultaneamente
+    // Prepara a estrutura do payload contendo o texto do usuario e possiveis arquivos
     const userContent: any[] = [{ type: "text", text: content }];
 
-    // Verifica se existem anexos e os processa corretamente
+    // Processa os arquivos anexados realizando a leitura de PDFs nativa e validando os formatos de imagem
     if (attachments && attachments.length > 0) {
       for (const file of attachments) {
         if (file.url) {
-
-          // Verifica se o arquivo e um PDF checando a extensao na URL ou no nome
           const isPdf = file.url.toLowerCase().includes('.pdf') || (file.name && file.name.toLowerCase().endsWith('.pdf'));
 
           if (isPdf) {
             try {
-              // Faz o download do PDF a partir da URL publica do banco
               const pdfResponse = await fetch(file.url);
               const arrayBuffer = await pdfResponse.arrayBuffer();
               const buffer = Buffer.from(arrayBuffer);
 
-              // Funcao auxiliar para ler o PDF usando a biblioteca pdf2json
               const extractTextFromPDF = (pdfBuffer: Buffer): Promise<string> => {
                 return new Promise((resolve, reject) => {
                   const pdfParser = new PDFParser(null, true);
-
                   pdfParser.on("pdfParser_dataError", (errData: any) => reject(errData.parserError));
-                  pdfParser.on("pdfParser_dataReady", () => {
-                    resolve(pdfParser.getRawTextContent());
-                  });
-
+                  pdfParser.on("pdfParser_dataReady", () => resolve(pdfParser.getRawTextContent()));
                   pdfParser.parseBuffer(pdfBuffer);
                 });
               };
 
-              // Aguarda a extracao do texto do arquivo PDF
               const pdfText = await extractTextFromPDF(buffer);
-
-              // Adiciona o texto extraido como contexto para a IA ler
               userContent.push({
                 type: "text",
                 text: `[Conteudo extraido do documento PDF '${file.name || 'documento'}':\n\n${pdfText}\n\nFim do documento]`
               });
-
             } catch (pdfError) {
-              console.error("Erro ao extrair texto do PDF:", pdfError);
-
-              // Informa a IA caso a leitura do arquivo tenha falhado
-              userContent.push({
-                type: "text",
-                text: `[Aviso do Sistema: Nao foi possivel ler o conteudo do arquivo PDF anexado.]`
-              });
+              userContent.push({ type: "text", text: `[Aviso do Sistema: Nao foi possivel ler o arquivo PDF.]` });
             }
           } else {
-            // Lista de extensoes de imagem permitidas pela OpenAI
             const validImageTypes = ['.jpg', '.jpeg', '.png', '.webp', '.gif'];
             const fileUrlLower = file.url.toLowerCase();
-
-            // Verifica se a URL do arquivo termina com alguma das extensoes suportadas
             const isSupportedImage = validImageTypes.some(ext => fileUrlLower.includes(ext));
 
             if (isSupportedImage) {
-              userContent.push({
-                type: "image_url",
-                image_url: { url: file.url }
-              });
+              userContent.push({ type: "image_url", image_url: { url: file.url } });
             } else {
-              // Informa a IA caso o formato do arquivo visual nao seja suportado (ex: SVG)
-              userContent.push({
-                type: "text",
-                text: `[Aviso do Sistema: O usuario anexou um arquivo '${file.name || 'desconhecido'}'. Formato nao suportado para leitura visual. Aceitamos apenas JPG, PNG, WEBP, GIF e PDF.]`
-              });
+              userContent.push({ type: "text", text: `[Aviso do Sistema: Formato nao suportado para leitura visual.]` });
             }
           }
         }
       }
     }
 
-    // Prepara a lista de mensagens no formato que a OpenAI exige. A regra de sempre responder foi adicionada ao final.
+    // Define o papel do Agente no prompt de sistema e acopla o historico de mensagens
     const messages: any[] = [
-      { role: "system", content: `Voce e o Customer Insights Copilot. Gerencie clientes com precisao. ID do usuario: ${TEMP_USER_ID}. REGRA IMPORTANTE: Sempre responda de forma clara ao usuario apos executar uma ferramenta para confirmar que a tarefa foi feita.` },
+      { role: "system", content: `Voce e o Customer Insights Copilot. ID: ${TEMP_USER_ID}. REGRA IMPORTANTE: Sempre responda de forma clara.` },
       ...(history?.reverse().map(m => ({ role: m.role, content: m.text })) || []),
       { role: "user", content: userContent }
     ];
 
-    // Faz a primeira chamada para a IA decidir o que fazer
+    // Secao de Integracao com o Model Context Protocol
+
+    // Busca o caminho absoluto do servidor MCP declarado nas variaveis de ambiente
+    const mcpServerPath = process.env.MCP_SERVER_PATH;
+    if (!mcpServerPath) {
+      throw new Error("Variavel MCP_SERVER_PATH nao configurada no ambiente.");
+    }
+
+    // Estabelece a conexao de transporte padrao com o servidor Node isolado
+    const transport = new StdioClientTransport({
+      command: "npx",
+      args: ["tsx", mcpServerPath]
+    });
+
+    const mcpClient = new Client({ name: "next-js-client", version: "1.0.0" }, { capabilities: {} });
+    await mcpClient.connect(transport);
+
+    // Requisita a lista de ferramentas disponiveis no servidor MCP e mapeia para o formato exigido pela OpenAI
+    // A expressao as const e utilizada para garantir que o TypeScript entenda type como a string literal function e evite erros de tipagem
+    const mcpToolsResponse = await mcpClient.listTools();
+    const openAiTools = mcpToolsResponse.tools.map(tool => ({
+      type: "function" as const,
+      function: {
+        name: tool.name,
+        description: tool.description,
+        parameters: tool.inputSchema
+      }
+    }));
+
+    // Envia a mensagem do usuario e as ferramentas disponiveis para a inteligencia artificial tomar uma decisao
     let response = await aiClient.chat.completions.create({
       messages,
       model: MODEL_NAME,
-      tools: AI_TOOLS,
+      tools: openAiTools.length > 0 ? openAiTools : undefined,
     });
 
     let aiMessage = response.choices[0].message;
 
-    // Verifica se a IA decidiu usar alguma ferramenta
+    // Executa a acao no servidor MCP caso a inteligencia artificial tenha solicitado o uso de alguma ferramenta especifica
     if (aiMessage.tool_calls) {
       for (const toolCall of aiMessage.tool_calls) {
-
-        // Verificacao de seguranca para o TypeScript nao dar erro
         if (toolCall.type !== "function") continue;
 
         const name = toolCall.function.name;
         const args = JSON.parse(toolCall.function.arguments);
-        let result;
 
-        // Mapeia o nome da ferramenta escolhida pela IA para a funcao real do sistema
-        if (name === "list_clients") result = await tools.listClientsTool();
-        if (name === "get_client_by_id") result = await tools.getClientByIdTool(args.id);
-        if (name === "create_client") result = await tools.createClientTool({ ...args, user_id: TEMP_USER_ID });
-        if (name === "update_client") result = await tools.updateClientTool(args.id, args.updates);
-        if (name === "delete_client") result = await tools.deleteClientTool(args.id);
+        // O servidor MCP executa a rotina de banco de dados e retorna o resultado
+        const mcpResult = await mcpClient.callTool({
+          name: name,
+          arguments: args
+        });
 
-        // Adiciona a chamada da ferramenta e o resultado na lista de mensagens
+        // Devolve o resultado da operacao executada de volta para o contexto da conversa com a inteligencia artificial
         messages.push(aiMessage);
-        messages.push({ role: "tool", tool_call_id: toolCall.id, content: JSON.stringify(result) });
+        messages.push({ role: "tool", tool_call_id: toolCall.id, content: JSON.stringify(mcpResult.content) });
       }
 
-      // Faz uma segunda chamada para a IA formular a resposta final baseada no resultado
+      // Solicita que a inteligencia artificial formule uma resposta compreensivel em texto baseada nos dados lidos do banco
       const secondResponse = await aiClient.chat.completions.create({ messages, model: MODEL_NAME });
       aiMessage = secondResponse.choices[0].message;
     }
 
-    // Define o texto final ou uma resposta padrao conversacional caso a IA falhe em gerar texto
-    const aiText = aiMessage.content || "Acao realizada com sucesso no banco de dados. Como posso ajudar agora?";
+    // Encerra a conexao com o MCP para liberar os recursos do sistema imediatamente
+    await transport.close();
 
-    // Salva a resposta da IA no banco de dados
+    // Salva a resposta final gerada pela IA no banco de dados Supabase e devolve para exibicao no Frontend
+    const aiText = aiMessage.content || "Acao realizada com sucesso no banco de dados.";
     await supabase.from('message').insert([{ text: aiText, role: 'assistant', user_id: TEMP_USER_ID }]);
 
     return { success: true, aiMessage: aiText };
@@ -152,7 +152,7 @@ export async function processChatMessage(content: string, role: string, attachme
   }
 }
 
-// Funcao responsavel por carregar as mensagens quando a pagina for atualizada
+// Funcao responsavel por carregar o historico completo de mensagens na inicializacao da pagina no navegador
 export async function fetchChatMessage() {
   try {
     const { data, error } = await supabase

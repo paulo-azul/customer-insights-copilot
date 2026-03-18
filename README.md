@@ -20,7 +20,7 @@ The **Customer Insights Copilot** is a Proof of Concept (POC) of an Artificial I
 * **Frontend / Backend:** [Next.js 16 (Turbopack)](https://nextjs.org/) using Server Actions.
 * **Database & Storage:** [Supabase](https://supabase.com/) (PostgreSQL).
 * **Artificial Intelligence:** [OpenAI SDK](https://platform.openai.com/docs/) with the `gpt-4o-mini` model (via GitHub Models/Azure Endpoint).
-* **Tool Calling Protocol:** `@modelcontextprotocol/sdk` to isolate database operations in a Single Source of Truth.
+* **Tool Calling Protocol:** `@modelcontextprotocol/sdk` to isolate database operations in a Single Source of Truth via HTTP (SSE).
 * **File Processing:** `pdf2json` for text extraction from PDFs.
 
 ## 🚀 How to run the project locally
@@ -29,6 +29,7 @@ The **Customer Insights Copilot** is a Proof of Concept (POC) of an Artificial I
 * Node.js (v20 or higher)
 * A Supabase account with the `client`, `message`, and `user` tables created.
 * GitHub Models (or OpenAI) API Key.
+* The backend **Customer Insights MCP Server** running locally.
 
 ### Step by Step
 
@@ -54,9 +55,8 @@ The **Customer Insights Copilot** is a Proof of Concept (POC) of an Artificial I
     ```bash
     NEXT_PUBLIC_SUPABASE_URL=your_supabase_url
     NEXT_PUBLIC_SUPABASE_ANON_KEY=your_anon_key
-    SUPABASE_SERVICE_ROLE_KEY=your_service_role_key
     AZURE_OPENAI_API_KEY=your_ai_api_key
-    MCP_SERVER_PATH=the_path_to_your_mcp_paste
+    MCP_SERVER_URL=http://localhost:3001/sse 
     ```
 
 5. **Start the development server:**

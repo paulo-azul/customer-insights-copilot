@@ -3,7 +3,7 @@
 import { supabaseAdmin as supabase } from "../lib/supabase";
 import { aiClient, MODEL_NAME } from "../lib/ai-agent";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
-import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js";
+import { SSEClientTransport } from "@modelcontextprotocol/sdk/client/sse.js";
 import PDFParser from "pdf2json";
 
 // Identificador temporario de usuario configurado para a prova de conceito
@@ -75,19 +75,16 @@ export async function processChatMessage(content: string, role: string, attachme
       { role: "user", content: userContent }
     ];
 
-    // Secao de Integracao com o Model Context Protocol
+    // Seção de Integracao com o Model Context Protocol via HTTP (SSE)
 
-    // Busca o caminho absoluto do servidor MCP declarado nas variaveis de ambiente
-    const mcpServerPath = process.env.MCP_SERVER_PATH;
-    if (!mcpServerPath) {
-      throw new Error("Variavel MCP_SERVER_PATH nao configurada no ambiente.");
+    // Busca a URL do servidor web MCP no ficheiro de ambiente
+    const mcpServerUrl = process.env.MCP_SERVER_URL;
+    if (!mcpServerUrl) {
+      throw new Error("Variavel MCP_SERVER_URL nao configurada no ambiente.");
     }
 
-    // Estabelece a conexao de transporte padrao com o servidor Node isolado
-    const transport = new StdioClientTransport({
-      command: "npx",
-      args: ["tsx", mcpServerPath]
-    });
+    // Estabelece a ligacao de rede com o servidor MCP remoto usando Server-Sent Events
+    const transport = new SSEClientTransport(new URL(mcpServerUrl));
 
     const mcpClient = new Client({ name: "next-js-client", version: "1.0.0" }, { capabilities: {} });
     await mcpClient.connect(transport);
